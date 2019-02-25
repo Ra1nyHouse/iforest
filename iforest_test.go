@@ -21,5 +21,8 @@ func Test_Division_1(t *testing.T) {
 
 	c := make([]interface{}, 5)
 	c[1] = 20
-	fmt.Print(c)
+	fmt.Println(c)
+
+	fmt.Println([5]bool{})
+
 }
