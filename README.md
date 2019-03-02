@@ -2,8 +2,9 @@
 
 ## iforest
 1. 本项目基于go语言实现了 iforest （Isolation Forest， Fei Tony Liu, Kai Ming Ting， https://cs.nju.edu.cn/zhouzh/zhouzh.files/publication/icdm08b.pdf）
-2. 论文原文实现的iforest有两个缺陷：（I）不支持空值，（II）不支持category类型
-3. 针对缺陷（I），本项目进行了改进
+2. 使用了go routine，在**树的粒度上并行**（即并行的构建树）
+3. 论文原文实现的iforest有两个缺陷：（I）不支持空值，（II）不支持category类型
+4. 针对缺陷（I），本项目进行了改进
 
 ## 针对iforest不支持空值的改进
 ### 树的构建阶段（训练）
