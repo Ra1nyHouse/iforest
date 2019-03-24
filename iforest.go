@@ -4,6 +4,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"sort"
 )
 
 const (
@@ -28,6 +29,7 @@ type Node struct {
 	SplitAtt   int
 	SplitValue Elem
 	Size       int
+	TreeSeed   int // 预测阶段使用，是其不受树顺序不确定的影响，只有根节点的Seed有意义
 }
 
 func NewModel() *IForest {
@@ -43,6 +45,21 @@ func (f *IForest) SetParams(nTrees, subSample int, mode int, randSeed int) {
 	f.randSeed = randSeed
 }
 
+func (f *IForest) Show(i int) {
+	node := f.roots[i]
+	_show(node, 0)
+}
+
+func _show(node *Node, deep int) {
+	if deep > 2 {
+		return
+	}
+	log.Printf("Level %d: node{SplitAtt: %d, SplitValue: %f, Size: %d} \n",
+		deep, node.SplitAtt, node.SplitValue.Value, node.Size)
+	_show(node.Left, deep+1)
+	_show(node.Right, deep+1)
+}
+
 func (f *IForest) Fit(rows []Row) {
 	r := rand.New(rand.NewSource(int64(f.randSeed)))
 	l := int(math.Ceil(math.Log2(float64(f.subSample))))
@@ -53,16 +70,20 @@ func (f *IForest) Fit(rows []Row) {
 		for j := 0; j < f.subSample; j++ {
 			row_index[j] = r.Intn(len(rows))
 		}
-		go func(treeID int, rSeed int64) {
-			ch <- _itree(rows, row_index, 0, l, rand.New(rand.NewSource(rSeed)))
+		go func(treeID int, rSeed int64, _row_index []int) {
+			rNode := _itree(rows, _row_index, 0, l, rand.New(rand.NewSource(rSeed)))
+			rNode.TreeSeed = int(rSeed)
+			ch <- rNode
 			log.Printf("goroutine: iTree #%d done...\n", treeID)
-		}(i, r.Int63n(10000))
+		}(i, r.Int63n(10000), row_index)
 	}
 
 	roots := make([]*Node, 0, 1000)
 	for i := 0; i < f.nTrees; i++ {
+		//node := <-ch
+		//log.Println(node.TreeSeed)
+		//roots = append(roots, node)
 		roots = append(roots, <-ch)
-		//log.Printf("main: iTree #%d done...", i)
 	}
 	f.roots = roots
 
@@ -137,19 +158,18 @@ func _itree(rows []Row, row_index []int, e int, l int, r *rand.Rand) *Node {
 func (f *IForest) Predict(rows []Row) []float32 {
 	ch := make(chan float32, 100)
 	scores := make([]float32, 0, 1000)
-	r := rand.New(rand.NewSource(int64(f.randSeed)))
+	//r := rand.New(rand.NewSource(int64(f.randSeed)))
 	for _, row := range rows {
 		for _, node := range f.roots {
 			// 在树的粒度上并行
-			//go func(r *rand.Rand) {
-			//	ch <- _path(row, node, 0, r)
-			//}(rand.New(rand.NewSource(r.Int63n(10000))))
-			//go func() {
-			//	ch <- _path(row, node, 0, rand.New(rand.NewSource(r.Int63n(10000))))
-			//}()
-			go func(rSeed int64) {
-				ch <- _path(row, node, 0, rand.New(rand.NewSource(rSeed)))
-			}(r.Int63n(10000))
+			go func(_node *Node) {
+				ch <- _path(row, _node, 0, rand.New(rand.NewSource(int64(_node.TreeSeed))))
+			}(node)
+
+			// 一定要注意协程不要引用局部变量，下面会导致BUG，node 几乎是同一个
+			//go func(rSeed int) {
+			//	ch <- _path(row, node, 0, rand.New(rand.NewSource(int64(rSeed))))
+			//}(node.TreeSeed)
 		}
 		score := float32(0)
 		for i := 0; i < len(f.roots); i++ {
@@ -196,12 +216,25 @@ func _c(size int) float32 {
 	}
 }
 
-func (f *IForest) Evaluate(rows []Row, labels []int8) float32 {
+func (f *IForest) Evaluate(rows []Row, labels []int8, metric func([]float32, []int8) float32) float32 {
 	scores := f.Predict(rows)
+	return f.Metric(scores, labels, metric)
+}
+
+func (f *IForest) Metric(scores []float32, labels []int8, metric func([]float32, []int8) float32) float32 {
+	return metric(scores, labels)
+}
+
+// AUC 只适用于本例情况，即score越小，正例可能性更大
+func AUC(scores []float32, labels []int8) float32 {
+	return 1 - auc(scores, labels)
+}
+
+func auc(scores []float32, labels []int8) float32 {
 	// label 1表示坏用户， 而score越小表示用户越“坏”
-	for i, score := range scores {
-		scores[i] = -score
-	}
+	//for i, score := range scores {
+	//	scores[i] = -score
+	//}
 	auc := float32(0)
 	mPos := 0
 	mNeg := 0
@@ -225,4 +258,46 @@ func (f *IForest) Evaluate(rows []Row, labels []int8) float32 {
 	auc = auc / float32(mPos*mNeg)
 	auc = 1 - auc
 	return auc
+}
+
+func TopNPre(scores []float32, labels []int8, N int) float32 {
+	indices := make([]struct {
+		I int
+		V float32
+	}, len(scores))
+	for i, v := range scores {
+		indices[i].I = i
+		indices[i].V = v
+	}
+	sort.Slice(indices, func(i, j int) bool {
+		return indices[i].V < indices[j].V
+	})
+
+	trueP := 0
+	for i := 0; i < N; i++ {
+		if labels[indices[i].I] == 1 {
+			trueP += 1
+		}
+	}
+	return float32(trueP) / float32(N)
+}
+
+func Top20Pre(scores []float32, labels []int8) float32 {
+	return TopNPre(scores, labels, 20)
+}
+
+func Top50Pre(scores []float32, labels []int8) float32 {
+	return TopNPre(scores, labels, 50)
+}
+
+func Top100Pre(scores []float32, labels []int8) float32 {
+	return TopNPre(scores, labels, 100)
+}
+
+func Top200Pre(scores []float32, labels []int8) float32 {
+	return TopNPre(scores, labels, 200)
+}
+
+func Top2000Pre(scores []float32, labels []int8) float32 {
+	return TopNPre(scores, labels, 2000)
 }
