@@ -24,7 +24,7 @@
 | Standard Mode | 0.474 | 0.232 | 0.276 | 0.301 |
 | NULL Mode | 0.536 | 0.331 | 0.362 | 0.389 |
 
-Standard Mode与论文实现相同，遇到空值则填充0；
+Standard Mode与论文实现相同，遇到空值则填充-1；
 NULL Mode针对空值做了改进。
 所有实验重复20次取均值。
 从结果来说支持空值的（NULL Mode）iforest表现更好，但不严谨。
